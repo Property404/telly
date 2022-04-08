@@ -321,7 +321,7 @@ impl<StreamType: Write + Read> TelnetStream<StreamType> {
                     // Don't push commands
                     if !iac {
                         // Escape NVT nonsense
-                        if !(self.translate && byte == 0) {
+                        if !(byte == 0 && self.translate) {
                             data_buffer.push(byte);
                         }
                     } else {
