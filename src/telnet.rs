@@ -1,3 +1,4 @@
+use crate::utils::TellyIterTraits;
 use bytes::{Buf, BytesMut};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -149,7 +150,7 @@ impl TelnetEvent {
     /// Transform into bytes.
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
-            TelnetEvent::Data(data) => data,
+            TelnetEvent::Data(data) => data.into_iter().escape_iacs().collect(),
             TelnetEvent::Command(command) => {
                 vec![TelnetCommand::IAC.into(), command.into()]
             }
@@ -164,7 +165,7 @@ impl TelnetEvent {
                     TelnetCommand::SB.into(),
                     option.into(),
                 ];
-                vec.extend(bytes);
+                vec.extend(bytes.into_iter().escape_iacs().collect::<Vec<_>>());
                 vec.extend(&[TelnetCommand::IAC.into(), TelnetCommand::SE.into()]);
                 vec
             }
@@ -292,5 +293,70 @@ impl TelnetParser {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse() {
+        let test_vectors = vec![
+            (
+                vec![0xDE, 0xAD, 0xBE, 0xEF, 8],
+                vec![TelnetEvent::Data(vec![0xDE, 0xAD, 0xBE, 0xEF, 8])],
+            ),
+            (
+                vec![
+                    TelnetCommand::IAC.into(),
+                    TelnetCommand::WILL.into(),
+                    TelnetOption::LineMode.into(),
+                    0x42,
+                ],
+                vec![
+                    TelnetEvent::Negotiation {
+                        command: TelnetCommand::WILL,
+                        option: TelnetOption::LineMode,
+                    },
+                    TelnetEvent::Data(vec![0x42]),
+                ],
+            ),
+            (
+                vec![TelnetCommand::IAC.into(), TelnetCommand::WILL.into()],
+                vec![],
+            ),
+            (vec![], vec![]),
+            (vec![TelnetCommand::IAC.into()], vec![]),
+            (
+                vec![TelnetCommand::IAC.into(), TelnetCommand::IAC.into()],
+                vec![TelnetEvent::Data(vec![0xff])],
+            ),
+            (
+                vec![
+                    TelnetCommand::IAC.into(),
+                    TelnetCommand::SB.into(),
+                    TelnetOption::NegotiateAboutWindowSize.into(),
+                    0xCA,
+                    0xFE,
+                    TelnetCommand::IAC.into(),
+                    TelnetCommand::SE.into(),
+                ],
+                vec![TelnetEvent::SubNegotiation {
+                    option: TelnetOption::NegotiateAboutWindowSize,
+                    bytes: vec![0xCA, 0xFE],
+                }],
+            ),
+        ];
+
+        let parser = TelnetParser::default();
+        for tv in test_vectors {
+            let mut bytes = BytesMut::from(&tv.0[0..tv.0.len()]);
+            for expected_event in tv.1 {
+                let actual_event = parser.next_event(&mut bytes);
+                assert_eq!(actual_event, Some(expected_event));
+            }
+            assert_eq!(parser.next_event(&mut bytes), None);
+        }
     }
 }
