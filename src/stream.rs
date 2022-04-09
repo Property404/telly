@@ -77,10 +77,6 @@ impl<StreamType: Write + Read> TelnetStream<StreamType> {
         self.stream.flush()?;
         Ok(())
     }
-
-    fn next_event(&mut self) -> Option<TelnetEvent> {
-        self.parser.next_event(&mut self.rx_buffer)
-    }
 }
 
 impl<T: Write + Read> Iterator for TelnetStream<T> {
@@ -90,7 +86,7 @@ impl<T: Write + Read> Iterator for TelnetStream<T> {
         const BUFFER_SIZE: usize = 16;
         let mut vec: Vec<u8> = vec![0; BUFFER_SIZE];
 
-        if let Some(event) = self.next_event() {
+        if let Some(event) = self.parser.next_event(&mut self.rx_buffer) {
             return Some(event);
         }
 
@@ -98,7 +94,7 @@ impl<T: Write + Read> Iterator for TelnetStream<T> {
             let bytes_read = self.stream.read(&mut vec).expect("fuck");
             self.rx_buffer.put(&vec[0..bytes_read]);
 
-            if let Some(event) = self.next_event() {
+            if let Some(event) = self.parser.next_event(&mut self.rx_buffer) {
                 return Some(event);
             } else if bytes_read == 0 {
                 println!("next> End of stream!");

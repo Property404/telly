@@ -185,7 +185,7 @@ impl Default for TelnetParser {
     }
 }
 impl TelnetParser {
-    /// Get next event from a BytesMut.
+    /// Pull next event out of a BytesMut, if available.
     pub fn next_event(&self, rx_buffer: &mut BytesMut) -> Option<TelnetEvent> {
         let mut event_type = EventType::Null;
         let mut data_buffer = Vec::new();
