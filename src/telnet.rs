@@ -118,6 +118,65 @@ pub enum TelnetEvent {
     Data(Vec<u8>),
 }
 
+impl TelnetEvent {
+    /// Construct a "do" negotiation from an option.
+    pub fn r#do(option: TelnetOption) -> Self {
+        TelnetEvent::Negotiation {
+            command: TelnetCommand::DO,
+            option,
+        }
+    }
+
+    /// Construct a "dont" negotiation from an option.
+    pub fn dont(option: TelnetOption) -> Self {
+        TelnetEvent::Negotiation {
+            command: TelnetCommand::DONT,
+            option,
+        }
+    }
+
+    /// Construct a "will" negotiation from an option.
+    pub fn will(option: TelnetOption) -> Self {
+        TelnetEvent::Negotiation {
+            command: TelnetCommand::WILL,
+            option,
+        }
+    }
+
+    /// Construct a "wont" negotiation from an option.
+    pub fn wont(option: TelnetOption) -> Self {
+        TelnetEvent::Negotiation {
+            command: TelnetCommand::WONT,
+            option,
+        }
+    }
+
+    /// Transform into bytes.
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            TelnetEvent::Data(data) => data,
+            TelnetEvent::Command(command) => {
+                vec![TelnetCommand::IAC.into(), command.into()]
+            }
+            TelnetEvent::Negotiation { command, option } => {
+                // Does option need to be escaped if 0xFF??
+                // RFC seems not so clear about that
+                vec![TelnetCommand::IAC.into(), command.into(), option.into()]
+            }
+            TelnetEvent::SubNegotiation { option, bytes } => {
+                let mut vec = vec![
+                    TelnetCommand::IAC.into(),
+                    TelnetCommand::SB.into(),
+                    option.into(),
+                ];
+                vec.extend(bytes);
+                vec.extend(&[TelnetCommand::IAC.into(), TelnetCommand::SE.into()]);
+                vec
+            }
+        }
+    }
+}
+
 pub struct TelnetStream<StreamType>
 where
     StreamType: Write + Read,
@@ -145,79 +204,37 @@ impl<StreamType: Write + Read> TelnetStream<StreamType> {
 
     /// Send a TelnetEvent to remote
     pub fn send_event(&mut self, event: TelnetEvent) -> TellyResult {
-        match event {
-            TelnetEvent::Data(data) => {
-                self.send_bytes(&data)?;
-            }
-            TelnetEvent::Command(command) => {
-                self.send_raw_bytes(&[TelnetCommand::IAC.into(), command.into()])?;
-            }
-            TelnetEvent::Negotiation { command, option } => {
-                // Does option need to be escaped if 0xFF??
-                // RFC seems not so clear about that
-                self.send_raw_bytes(&[TelnetCommand::IAC.into(), command.into(), option.into()])?;
-            }
-            TelnetEvent::SubNegotiation { option, bytes } => {
-                self.send_raw_bytes(&[
-                    TelnetCommand::IAC.into(),
-                    TelnetCommand::SB.into(),
-                    option.into(),
-                ])?;
-                self.send_bytes(&bytes)?;
-                self.send_raw_bytes(&[TelnetCommand::IAC.into(), TelnetCommand::SE.into()])?;
-            }
-        }
-        self.stream.flush()?;
-        Ok(())
+        let bytes = event.into_bytes();
+        self.send_bytes(&bytes)
     }
 
     /// Convenience function to send a WILL negotiation event
     pub fn send_will(&mut self, option: TelnetOption) -> TellyResult {
-        self.send_event(TelnetEvent::Negotiation {
-            command: TelnetCommand::WILL,
-            option,
-        })
+        self.send_event(TelnetEvent::will(option))
     }
 
     /// Convenience function to send a DO negotiation event
     pub fn send_do(&mut self, option: TelnetOption) -> TellyResult {
-        self.send_event(TelnetEvent::Negotiation {
-            command: TelnetCommand::DO,
-            option,
-        })
+        self.send_event(TelnetEvent::r#do(option))
     }
 
     /// Convenience function to send a WONT negotiation event
     pub fn send_wont(&mut self, option: TelnetOption) -> TellyResult {
-        self.send_event(TelnetEvent::Negotiation {
-            command: TelnetCommand::WONT,
-            option,
-        })
+        self.send_event(TelnetEvent::wont(option))
     }
 
     /// Convenience function to send a DONT negotiation event
     pub fn send_dont(&mut self, option: TelnetOption) -> TellyResult {
-        self.send_event(TelnetEvent::Negotiation {
-            command: TelnetCommand::DONT,
-            option,
-        })
-    }
-
-    /// Convenience function to send ASCII data to remote.
-    pub fn send_data(&mut self, data: &[u8]) -> TellyResult {
-        self.send_bytes(data)?;
-        self.stream.flush()?;
-        Ok(())
+        self.send_event(TelnetEvent::dont(option))
     }
 
     /// Convenience function to send ASCII data to remote.
     pub fn send_str(&mut self, data: &str) -> TellyResult {
-        self.send_bytes(data.as_bytes())?;
-        self.stream.flush()?;
-        Ok(())
+        self.send_bytes(data.as_bytes())
     }
 
-    fn send_bytes(&mut self, bytes: &[u8]) -> TellyResult {
+    /// Send ASCII data to remote.
+    pub fn send_bytes(&mut self, bytes: &[u8]) -> TellyResult {
         for byte in bytes.iter().copied() {
             if byte == TelnetCommand::IAC.into() {
                 self.send_raw_bytes(&[TelnetCommand::IAC.into()])?;
@@ -226,6 +243,7 @@ impl<StreamType: Write + Read> TelnetStream<StreamType> {
             self.send_raw_bytes(bytes)?;
         }
 
+        self.stream.flush()?;
         Ok(())
     }
 

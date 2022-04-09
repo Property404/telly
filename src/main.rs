@@ -57,7 +57,7 @@ fn handle_client(stream: impl Write + Read) {
                     } else {
                         if (0x20..0x7f).contains(&data) {
                             print!("{}", data as char);
-                            stream.send_data(&[data]).unwrap();
+                            stream.send_bytes(&[data]).unwrap();
                         } else {
                             print!("[0x{data:x}]");
                         }
