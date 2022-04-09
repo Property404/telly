@@ -1,3 +1,5 @@
 pub mod errors;
+mod stream;
 mod telnet;
-pub use telnet::{TelnetCommand, TelnetEvent, TelnetOption, TelnetStream};
+pub use stream::TelnetStream;
+pub use telnet::{TelnetCommand, TelnetEvent, TelnetOption, TelnetParser};
