@@ -150,7 +150,7 @@ impl TelnetEvent {
     /// Transform into bytes.
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
-            TelnetEvent::Data(data) => data.into_iter().escape_iacs().collect(),
+            TelnetEvent::Data(data) => data.into_iter().unix_to_nvt().collect(),
             TelnetEvent::Command(command) => {
                 vec![TelnetCommand::IAC.into(), command.into()]
             }
