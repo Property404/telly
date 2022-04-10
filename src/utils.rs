@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Miscellaneous Telnet utilities.
 use crate::TelnetCommand;
 
@@ -27,6 +28,15 @@ impl<T: Iterator<Item = u8>> Iterator for EscapeIacs<T> {
 /// Extra iterator methods for use by Telly.
 pub trait TellyIterTraits: Iterator + Sized {
     /// Escape 0xFF's in bytes, as specified by the Telnet RFC.
+    ///
+    /// # Example
+    /// ```
+    /// use telly::utils::TellyIterTraits;
+    ///
+    /// let bytes = vec![0xc0, 0xff, 0xee];
+    /// let bytes: Vec<u8> = bytes.into_iter().escape_iacs().collect();
+    /// assert_eq!(bytes, vec![0xc0, 0xff, 0xff, 0xee]);
+    /// ```
     fn escape_iacs(self) -> EscapeIacs<Self>
     where
         Self: Iterator<Item = u8>,

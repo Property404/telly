@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Error and result types for Telly.
 use std::io;
 use thiserror::Error;
