@@ -1,4 +1,3 @@
-#![warn(missing_docs)]
 //! Error and result types for Telly.
 use std::io;
 use thiserror::Error;
@@ -12,6 +11,9 @@ pub enum TellyError {
     /// Not all bytes were written in a call to [write()](std::io::Write::write).
     #[error("Failed to write all bytes")]
     DidNotWriteAllBytes,
+    /// Decoded bad Telnet Data
+    #[error("Bad telnet data: {0}")]
+    DecodeError(String),
 }
 
 /// Result type used in this crate.

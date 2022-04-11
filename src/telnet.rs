@@ -4,43 +4,53 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
 #[derive(FromPrimitive, PartialEq, Debug, Clone, Copy)]
-#[allow(clippy::upper_case_acronyms)]
+/// Telnet commands listed in [RFC854](https://www.rfc-editor.org/rfc/rfc854).
 pub enum TelnetCommand {
     /// End of subnegotiation parameters
     SE = 0xf0,
     /// No operation.
     NOP = 0xf1,
-    /// The data stream portion of a Synch. This should always be accompanied by a TCP Urgent notification.
+    /// The data stream portion of a Synch. This should always be accompanied by a TCP Urgent
+    /// notification.
     DataMark = 0xf2,
     /// NVT character BRK.
     Break = 0xf3,
-    /// The function IP.
+    /// Suspend, interrupt, abort or terminate the process to which the NVT is connected. Also,
+    /// part of the out-of-band signal for other protocols which use Telnet
     InterruptProcess = 0xf4,
-    /// The function AO.
+    /// Allow the current process to (appear to) run to completion, but do not send its output to
+    /// the user. Also, send a Synch to the user.
     AbortOutput = 0xf5,
-    /// It's me, Margaret.
+    /// It's me, Margaret. Tell the receive to send back to the NVT some visible (i.e., printable)
+    /// evidence that the AYT was received. This function may be invoked by the user when the
+    /// system is unexpectedly "silent" for a long time, because of the unanticipated (by the user)
+    /// length of a computation, an unusually heavy system load, etc. AYT is the standard
+    /// representation for invoking this function.
     AreYouThere = 0xf6,
-    /// The function EC.
+    /// Inform the recipient that they should delete the last preceding undeleted character or
+    /// "print position" from the data stream.
     EraseCharacter = 0xf7,
-    /// The function EL.
+    /// Inform the recipient that they should delete characters from the data stream back to, but
+    /// not including, the last "CR LF" sequence sent over the Telnet connection.
     EraseLine = 0xf8,
     /// The GA signal.
     GoAhead = 0xf9,
     /// Indicates that what follows is subnegotiation of the indicated option.
     SB = 0xfa,
     /// Indicates the want to begin performing, or confirmation that you are now performing, the indicated option.
-    WILL = 0xfb,
+    Will = 0xfb,
     /// Indicates the refusal to perform, or continue performing, the indicated option.
-    WONT = 0xfc,
+    Wont = 0xfc,
     /// Indicates the request that the other party perform, or confirmation that you are expecting the other party to perform, the indicated option.
-    DO = 0xfd,
+    Do = 0xfd,
     /// Indicates the demand that the other party stop performing, or confirmation that you are no longer expecting the other party to perform, the indicated option.
-    DONT = 0xfe,
-    /// Interpret As Command - precedes Telnet commands. Is sent twice to signify a literal 0xff.
+    Dont = 0xfe,
+    /// Interpret As Command - precedes all Telnet commands. Is sent twice to signify a literal
+    /// 0xff.
     IAC = 0xff,
 
     /// Unknown Telnet command.
-    UNKNOWN = 0x00,
+    Unknown = 0x00,
 }
 
 impl From<TelnetCommand> for u8 {
@@ -53,12 +63,13 @@ impl From<u8> for TelnetCommand {
     fn from(byte: u8) -> Self {
         match Self::from_u8(byte) {
             Some(val) => val,
-            None => Self::UNKNOWN,
+            None => Self::Unknown,
         }
     }
 }
 
 #[derive(FromPrimitive, PartialEq, Debug, Clone, Copy)]
+/// Options that follow WILL, DO, DONT, WONT, and SB. These are defined across multiple RFCs.
 pub enum TelnetOption {
     /// [RFC856](https://www.rfc-editor.org/rfc/rfc856.html)
     BinaryTransmission = 0,
@@ -80,6 +91,7 @@ pub enum TelnetOption {
     NegotiateAboutWindowSize = 31,
     /// [RFC1184](https://www.rfc-editor.org/rfc/rfc1184.html)
     LineMode = 34,
+    /// Unknown Telnet option.
     Unknown = 0xfe,
 }
 
@@ -98,19 +110,26 @@ impl From<u8> for TelnetOption {
 }
 
 #[derive(PartialEq, Debug, Clone)]
+/// Represents an event sent over, or to be sent over, Telnet.
 pub enum TelnetEvent {
+    /// A Telnet command.
     Command(TelnetCommand),
-
+    /// A Telnet request/demand/ack/nack like WILL <option>, DONT <option>, WONT <option>, or DO
+    /// <option>
     Negotiation {
+        /// The command.
         command: TelnetCommand,
+        /// The option to request/demand/acknowledge/negative-acknowledge
         option: TelnetOption,
     },
-
+    /// A subnegotiation, defined by one of many RFC's. This contains arbitrary data.
     SubNegotiation {
+        /// The Telnet option to negotiate.
         option: TelnetOption,
+        /// Subnegotiation parameters.
         bytes: Vec<u8>,
     },
-
+    /// ASCII(generally). This is not NVT encoded.
     Data(Vec<u8>),
 }
 
@@ -118,7 +137,7 @@ impl TelnetEvent {
     /// Construct a "do" negotiation from an option.
     pub const fn r#do(option: TelnetOption) -> Self {
         TelnetEvent::Negotiation {
-            command: TelnetCommand::DO,
+            command: TelnetCommand::Do,
             option,
         }
     }
@@ -126,7 +145,7 @@ impl TelnetEvent {
     /// Construct a "dont" negotiation from an option.
     pub const fn dont(option: TelnetOption) -> Self {
         TelnetEvent::Negotiation {
-            command: TelnetCommand::DONT,
+            command: TelnetCommand::Dont,
             option,
         }
     }
@@ -134,7 +153,7 @@ impl TelnetEvent {
     /// Construct a "will" negotiation from an option.
     pub const fn will(option: TelnetOption) -> Self {
         TelnetEvent::Negotiation {
-            command: TelnetCommand::WILL,
+            command: TelnetCommand::Will,
             option,
         }
     }
@@ -142,7 +161,7 @@ impl TelnetEvent {
     /// Construct a "wont" negotiation from an option.
     pub const fn wont(option: TelnetOption) -> Self {
         TelnetEvent::Negotiation {
-            command: TelnetCommand::WONT,
+            command: TelnetCommand::Wont,
             option,
         }
     }
@@ -173,7 +192,7 @@ impl TelnetEvent {
     }
 }
 
-/// Stateless telnet parser.
+/// Stateless Telnet parser.
 pub struct TelnetParser {
     // Translate from NVT?
     translate: bool,
@@ -222,10 +241,10 @@ impl TelnetParser {
                         command = Some(TelnetCommand::from(byte));
                         let command = command.expect("Bug: No Command");
                         if [
-                            TelnetCommand::WILL,
-                            TelnetCommand::WONT,
-                            TelnetCommand::DO,
-                            TelnetCommand::DONT,
+                            TelnetCommand::Will,
+                            TelnetCommand::Wont,
+                            TelnetCommand::Do,
+                            TelnetCommand::Dont,
                         ]
                         .contains(&command)
                         {
@@ -310,20 +329,20 @@ mod tests {
             (
                 vec![
                     TelnetCommand::IAC.into(),
-                    TelnetCommand::WILL.into(),
+                    TelnetCommand::Will.into(),
                     TelnetOption::LineMode.into(),
                     0x42,
                 ],
                 vec![
                     TelnetEvent::Negotiation {
-                        command: TelnetCommand::WILL,
+                        command: TelnetCommand::Will,
                         option: TelnetOption::LineMode,
                     },
                     TelnetEvent::Data(vec![0x42]),
                 ],
             ),
             (
-                vec![TelnetCommand::IAC.into(), TelnetCommand::WILL.into()],
+                vec![TelnetCommand::IAC.into(), TelnetCommand::Will.into()],
                 vec![],
             ),
             (vec![], vec![]),

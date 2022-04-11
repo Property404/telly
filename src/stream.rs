@@ -9,6 +9,7 @@ use std::{
     iter::Iterator,
 };
 
+/// Abstraction representing a Telnet server or client.
 pub struct TelnetStream<StreamType>
 where
     StreamType: Write + Read,
