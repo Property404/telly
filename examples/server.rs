@@ -3,7 +3,7 @@ use std::{
     net::{TcpListener, TcpStream},
     thread,
 };
-use telly::{TelnetEvent, TelnetOption, TelnetStream};
+use telly::{TelnetEvent, TelnetOption, TelnetStream, TelnetSubnegotiation};
 
 struct TelnetServer {
     listener: TcpListener,
@@ -38,11 +38,12 @@ fn handle_client(stream: impl Write + Read) {
     // Enable character mode
     stream.send_will(TelnetOption::Echo).unwrap();
     stream.send_will(TelnetOption::SuppressGoAhead).unwrap();
+    stream.send_do(TelnetOption::TerminalType).unwrap();
+    stream
+        .send_event(TelnetSubnegotiation::TerminalTypeRequest.into())
+        .unwrap();
 
     // Get terminal size
-    // Returns as:
-    // IAC SB NAWS <16-bit value> <16-bit value> IAC SE
-    // See https://www.rfc-editor.org/rfc/rfc1073.html
     stream
         .send_do(TelnetOption::NegotiateAboutWindowSize)
         .unwrap();
@@ -65,22 +66,19 @@ fn handle_client(stream: impl Write + Read) {
                     }
                 }
             }
-            TelnetEvent::SubNegotiation { option, bytes } => match option {
-                TelnetOption::NegotiateAboutWindowSize => {
-                    if bytes.len() != 4 {
-                        eprintln!("Failed to parse NegotiateAboutWindowSize");
-                        continue;
+            TelnetEvent::Subnegotiation(subnegotiation) => {
+                match subnegotiation.try_into().unwrap() {
+                    TelnetSubnegotiation::NegotiateAboutWindowSize { width, height } => {
+                        println!("Width: {width}\nHeight: {height}");
                     }
-
-                    let bytes: Vec<_> = bytes.into_iter().map(|x| x as u16).collect();
-                    let width = (bytes[0] << 8) + bytes[1];
-                    let height = (bytes[2] << 8) + bytes[3];
-                    println!("Width: {width}\nHeight: {height}");
+                    TelnetSubnegotiation::TerminalTypeResponse(terminal) => {
+                        println!("Terminal type: {terminal}");
+                    }
+                    _ => {
+                        println!("Ignoring unknown subnegotiation");
+                    }
                 }
-                _ => {
-                    println!("Ignoring unknown subnegotiation");
-                }
-            },
+            }
             other => {
                 println!("Received Telnet stuff: {other:?}!");
             }
@@ -89,6 +87,8 @@ fn handle_client(stream: impl Write + Read) {
 }
 
 fn main() {
-    let server = TelnetServer::new("127.0.0.1:8000");
+    let host = "127.0.0.1:8000";
+    let server = TelnetServer::new(host);
+    println!("Listening on {host}");
     server.listen(handle_client);
 }

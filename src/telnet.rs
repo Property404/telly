@@ -1,7 +1,14 @@
-use crate::utils::TellyIterTraits;
+use crate::{
+    errors::{TellyError, TellyResult},
+    utils::TellyIterTraits,
+};
 use bytes::{Buf, BytesMut};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+
+// Constants used in some Telnet subnegotiations.
+const IS: u8 = 0x00;
+const SEND: u8 = 0x01;
 
 #[derive(FromPrimitive, PartialEq, Debug, Clone, Copy)]
 /// Telnet commands listed in [RFC854](https://www.rfc-editor.org/rfc/rfc854).
@@ -85,6 +92,8 @@ pub enum TelnetOption {
     Status = 5,
     /// [RFC860](https://www.rfc-editor.org/rfc/rfc860.html)
     TimingMark = 6,
+    /// [RFC727](https://www.rfc-editor.org/rfc/rfc727.html)
+    Logout = 18,
     /// [RFC1091](https://www.rfc-editor.org/rfc/rfc1091.html)
     TerminalType = 24,
     /// [RFC1073](https://www.rfc-editor.org/rfc/rfc1073.html)
@@ -123,12 +132,7 @@ pub enum TelnetEvent {
         option: TelnetOption,
     },
     /// A subnegotiation, defined by one of many RFC's. This contains arbitrary data.
-    SubNegotiation {
-        /// The Telnet option to negotiate.
-        option: TelnetOption,
-        /// Subnegotiation parameters.
-        bytes: Vec<u8>,
-    },
+    Subnegotiation(UnparsedTelnetSubnegotiation),
     /// ASCII(generally). This is not NVT encoded.
     Data(Vec<u8>),
 }
@@ -178,17 +182,148 @@ impl TelnetEvent {
                 // RFC seems not so clear about that
                 vec![TelnetCommand::IAC.into(), command.into(), option.into()]
             }
-            TelnetEvent::SubNegotiation { option, bytes } => {
-                let mut vec = vec![
-                    TelnetCommand::IAC.into(),
-                    TelnetCommand::SB.into(),
-                    option.into(),
-                ];
-                vec.extend(bytes.into_iter().escape_iacs().collect::<Vec<_>>());
-                vec.extend(&[TelnetCommand::IAC.into(), TelnetCommand::SE.into()]);
-                vec
-            }
+            TelnetEvent::Subnegotiation(subnegotiation) => subnegotiation.into_bytes(),
         }
+    }
+}
+
+impl From<TelnetSubnegotiation> for TelnetEvent {
+    fn from(other: TelnetSubnegotiation) -> Self {
+        Self::Subnegotiation(other.into())
+    }
+}
+
+/// A yet-to-be-parsed Telnet subnegotiation.
+///
+/// # Example
+/// ```
+/// use telly::{UnparsedTelnetSubnegotiation, TelnetSubnegotiation};
+///
+/// let parsed = TelnetSubnegotiation::NegotiateAboutWindowSize {
+///     width: 55,
+///     height: 20
+/// };
+/// let deparsed = UnparsedTelnetSubnegotiation::from(parsed.clone());
+///
+/// assert_eq!(parsed, deparsed.try_into().unwrap());
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnparsedTelnetSubnegotiation {
+    /// The [TelnetOption] this subnegotiation is associated with.
+    pub option: TelnetOption,
+    /// The unparsed inner bytes of the subnegotiation.
+    pub bytes: Vec<u8>,
+}
+impl From<TelnetSubnegotiation> for UnparsedTelnetSubnegotiation {
+    fn from(other: TelnetSubnegotiation) -> Self {
+        let (option, bytes) = other.option_bytes();
+        Self { option, bytes }
+    }
+}
+
+impl UnparsedTelnetSubnegotiation {
+    const fn new(option: TelnetOption, bytes: Vec<u8>) -> Self {
+        Self { option, bytes }
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        [
+            TelnetCommand::IAC.into(),
+            TelnetCommand::SB.into(),
+            self.option.into(),
+        ]
+        .into_iter()
+        .chain(self.bytes.into_iter().escape_iacs())
+        .chain([TelnetCommand::IAC.into(), TelnetCommand::SE.into()])
+        .collect()
+    }
+}
+
+/// A parsed subnegotiation event.
+#[derive(PartialEq, Debug, Clone)]
+pub enum TelnetSubnegotiation {
+    /// Parsed NAWS subnegotiation. See [RFC1073](https://datatracker.ietf.org/doc/html/rfc1073)
+    /// for details.
+    NegotiateAboutWindowSize {
+        /// The width of the window in characters.
+        width: u16,
+        /// The height of the window in characters.
+        height: u16,
+    },
+    /// Parsed terminal-type request subnegotiation. The other end should send a
+    /// [TelnetSubnegotiation::TerminalTypeResponse] in response. See
+    /// [RFC1091](https://www.rfc-editor.org/rfc/rfc1091.html) for details.
+    TerminalTypeRequest,
+    /// Parsed terminal-type response subnegotiation. Contains the name of the terminal as a string. E.g.
+    /// "XTERM-256COLOR". See [RFC1091](https://www.rfc-editor.org/rfc/rfc1091.html) for details.
+    TerminalTypeResponse(String),
+    /// A subnegotiation for which Telly has not implemented parsing. But fear not, for you can
+    /// parse it yourself!
+    Other {
+        /// The [TelnetOption] this subnegotiation is associated with.
+        option: TelnetOption,
+        /// The unparsed inner bytes of the subnegotiation.
+        bytes: Vec<u8>,
+    },
+}
+
+impl TryFrom<UnparsedTelnetSubnegotiation> for TelnetSubnegotiation {
+    type Error = TellyError;
+    fn try_from(other: UnparsedTelnetSubnegotiation) -> TellyResult<Self> {
+        let bytes = other.bytes;
+        let option = other.option;
+        match option {
+            TelnetOption::NegotiateAboutWindowSize => {
+                if bytes.len() != 4 {
+                    return Err(TellyError::DecodeError(
+                        "Incorrect number of bytes for NAWS subnegotiation".into(),
+                    ));
+                }
+
+                let width: u16 = ((bytes[0] as u16) << 8) + (bytes[1] as u16);
+                let height: u16 = ((bytes[2] as u16) << 8) + (bytes[3] as u16);
+
+                Ok(Self::NegotiateAboutWindowSize { width, height })
+            }
+            TelnetOption::TerminalType => {
+                if !bytes.is_empty() && bytes[0] == SEND {
+                    return Ok(TelnetSubnegotiation::TerminalTypeRequest);
+                } else if bytes.is_empty() || bytes[0] != IS {
+                    return Err(TellyError::DecodeError(
+                        "Expected IS or SEND in terminal-type subnegotiation".into(),
+                    ));
+                };
+
+                let term_name = String::from_utf8_lossy(&bytes[1..]).to_string();
+
+                Ok(Self::TerminalTypeResponse(term_name))
+            }
+            _ => Ok(Self::Other { option, bytes }),
+        }
+    }
+}
+
+impl TelnetSubnegotiation {
+    fn option_bytes(self) -> (TelnetOption, Vec<u8>) {
+        let (option, bytes) = match self {
+            Self::Other { option, bytes } => (option, bytes),
+            Self::NegotiateAboutWindowSize { width, height } => (
+                TelnetOption::NegotiateAboutWindowSize,
+                vec![
+                    (width >> 8) as u8,
+                    (width & 0xFF) as u8,
+                    (height >> 8) as u8,
+                    (height & 0xFF) as u8,
+                ],
+            ),
+            Self::TerminalTypeRequest => (TelnetOption::TerminalType, vec![SEND]),
+            Self::TerminalTypeResponse(term_name) => (TelnetOption::TerminalType, {
+                let mut vec = vec![IS];
+                vec.extend(term_name.as_bytes());
+                vec
+            }),
+        };
+
+        (option, bytes)
     }
 }
 
@@ -219,7 +354,7 @@ impl TelnetParser {
             Null,
             Data,
             Negotiation,
-            SubNegotiation,
+            Subnegotiation,
         }
 
         for byte in rx_buffer.iter() {
@@ -250,7 +385,7 @@ impl TelnetParser {
                         {
                             event_type = EventType::Negotiation;
                         } else if command == TelnetCommand::SB {
-                            event_type = EventType::SubNegotiation;
+                            event_type = EventType::Subnegotiation;
                         } else {
                             result = Some(TelnetEvent::Command(command));
                             break;
@@ -271,13 +406,12 @@ impl TelnetParser {
                     });
                     break;
                 }
-                EventType::SubNegotiation => {
+                EventType::Subnegotiation => {
                     if let Some(option) = option {
                         if iac && byte == TelnetCommand::SE.into() {
-                            result = Some(TelnetEvent::SubNegotiation {
-                                option,
-                                bytes: data_buffer,
-                            });
+                            result = Some(TelnetEvent::Subnegotiation(
+                                UnparsedTelnetSubnegotiation::new(option, data_buffer),
+                            ));
                             break;
                         } else {
                             data_buffer.push(byte);
@@ -356,15 +490,20 @@ mod tests {
                     TelnetCommand::IAC.into(),
                     TelnetCommand::SB.into(),
                     TelnetOption::NegotiateAboutWindowSize.into(),
+                    0x00,
                     0xCA,
+                    0x00,
                     0xFE,
                     TelnetCommand::IAC.into(),
                     TelnetCommand::SE.into(),
                 ],
-                vec![TelnetEvent::SubNegotiation {
-                    option: TelnetOption::NegotiateAboutWindowSize,
-                    bytes: vec![0xCA, 0xFE],
-                }],
+                vec![TelnetEvent::Subnegotiation(
+                    TelnetSubnegotiation::NegotiateAboutWindowSize {
+                        width: 0xCA,
+                        height: 0xFE,
+                    }
+                    .into(),
+                )],
             ),
         ];
 

@@ -11,9 +11,12 @@ pub enum TellyError {
     /// Not all bytes were written in a call to [write()](std::io::Write::write).
     #[error("Failed to write all bytes")]
     DidNotWriteAllBytes,
-    /// Decoded bad Telnet Data
+    /// Decoded bad Telnet Data.
     #[error("Bad telnet data: {0}")]
     DecodeError(String),
+    /// Invalid enum variant.
+    #[error("Invalid variant: {0}")]
+    InvalidVariant(String),
 }
 
 /// Result type used in this crate.

@@ -9,7 +9,8 @@ use std::{
     iter::Iterator,
 };
 
-/// Abstraction representing a Telnet server or client.
+/// Abstraction representing a Telnet server or client. This is a stateful wrapper around
+/// TelnetParser.
 pub struct TelnetStream<StreamType>
 where
     StreamType: Write + Read,
@@ -108,7 +109,7 @@ impl<T: Write + Read> Iterator for TelnetStream<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TelnetCommand;
+    use crate::{TelnetCommand, TelnetSubnegotiation, UnparsedTelnetSubnegotiation};
     use std::{collections::VecDeque, io::Result};
 
     // A loopback stream: `write()`'s feed its own read buffer.
@@ -119,7 +120,7 @@ mod tests {
 
     impl Read for MockStream {
         fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-            if buf.len() == 0 {
+            if buf.is_empty() {
                 panic!("Cannot read into empty buffer");
             }
             for i in 0..buf.len() {
@@ -177,10 +178,11 @@ mod tests {
             TelnetEvent::will(TelnetOption::SuppressGoAhead),
             TelnetEvent::dont(TelnetOption::TimingMark),
             TelnetEvent::wont(TelnetOption::BinaryTransmission),
-            TelnetEvent::SubNegotiation {
+            TelnetEvent::Subnegotiation(UnparsedTelnetSubnegotiation {
                 option: TelnetOption::BinaryTransmission,
                 bytes: vec![0xde, 0xad, 0xbe, 0xef],
-            },
+            }),
+            TelnetSubnegotiation::TerminalTypeResponse("xterm-turbo-edition".into()).into(),
         ];
 
         for event in events {
