@@ -3,11 +3,14 @@
 pub mod errors;
 pub mod utils;
 
+mod commands;
+mod constants;
 mod stream;
 mod telnet;
 
+pub use commands::TelnetCommand;
 pub use stream::TelnetStream;
 pub use telnet::{
-    TelnetCommand, TelnetEvent, TelnetOption, TelnetParser, TelnetSubnegotiation,
+    TelnetAction, TelnetEvent, TelnetOption, TelnetParser, TelnetSubnegotiation,
     UnparsedTelnetSubnegotiation,
 };

@@ -1,79 +1,12 @@
 use crate::{
+    constants,
     errors::{TellyError, TellyResult},
     utils::TellyIterTraits,
+    TelnetCommand,
 };
 use bytes::{Buf, BytesMut};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-
-// Constants used in some Telnet subnegotiations.
-const IS: u8 = 0x00;
-const SEND: u8 = 0x01;
-
-#[derive(FromPrimitive, PartialEq, Debug, Clone, Copy)]
-/// Telnet commands listed in [RFC854](https://www.rfc-editor.org/rfc/rfc854).
-pub enum TelnetCommand {
-    /// End of subnegotiation parameters
-    SE = 0xf0,
-    /// No operation.
-    NOP = 0xf1,
-    /// The data stream portion of a Synch. This should always be accompanied by a TCP Urgent
-    /// notification.
-    DataMark = 0xf2,
-    /// NVT character BRK.
-    Break = 0xf3,
-    /// Suspend, interrupt, abort or terminate the process to which the NVT is connected. Also,
-    /// part of the out-of-band signal for other protocols which use Telnet
-    InterruptProcess = 0xf4,
-    /// Allow the current process to (appear to) run to completion, but do not send its output to
-    /// the user. Also, send a Synch to the user.
-    AbortOutput = 0xf5,
-    /// It's me, Margaret. Tell the receive to send back to the NVT some visible (i.e., printable)
-    /// evidence that the AYT was received. This function may be invoked by the user when the
-    /// system is unexpectedly "silent" for a long time, because of the unanticipated (by the user)
-    /// length of a computation, an unusually heavy system load, etc. AYT is the standard
-    /// representation for invoking this function.
-    AreYouThere = 0xf6,
-    /// Inform the recipient that they should delete the last preceding undeleted character or
-    /// "print position" from the data stream.
-    EraseCharacter = 0xf7,
-    /// Inform the recipient that they should delete characters from the data stream back to, but
-    /// not including, the last "CR LF" sequence sent over the Telnet connection.
-    EraseLine = 0xf8,
-    /// The GA signal.
-    GoAhead = 0xf9,
-    /// Indicates that what follows is subnegotiation of the indicated option.
-    SB = 0xfa,
-    /// Indicates the want to begin performing, or confirmation that you are now performing, the indicated option.
-    Will = 0xfb,
-    /// Indicates the refusal to perform, or continue performing, the indicated option.
-    Wont = 0xfc,
-    /// Indicates the request that the other party perform, or confirmation that you are expecting the other party to perform, the indicated option.
-    Do = 0xfd,
-    /// Indicates the demand that the other party stop performing, or confirmation that you are no longer expecting the other party to perform, the indicated option.
-    Dont = 0xfe,
-    /// Interpret As Command - precedes all Telnet commands. Is sent twice to signify a literal
-    /// 0xff.
-    IAC = 0xff,
-
-    /// Unknown Telnet command.
-    Unknown = 0x00,
-}
-
-impl From<TelnetCommand> for u8 {
-    fn from(command: TelnetCommand) -> u8 {
-        command as u8
-    }
-}
-
-impl From<u8> for TelnetCommand {
-    fn from(byte: u8) -> Self {
-        match Self::from_u8(byte) {
-            Some(val) => val,
-            None => Self::Unknown,
-        }
-    }
-}
 
 #[derive(FromPrimitive, PartialEq, Debug, Clone, Copy)]
 /// Options that follow WILL, DO, DONT, WONT, and SB. These are defined across multiple RFCs.
@@ -125,12 +58,7 @@ pub enum TelnetEvent {
     Command(TelnetCommand),
     /// A Telnet request/demand/ack/nack like WILL <option>, DONT <option>, WONT <option>, or DO
     /// <option>
-    Negotiation {
-        /// The command.
-        command: TelnetCommand,
-        /// The option to request/demand/acknowledge/negative-acknowledge
-        option: TelnetOption,
-    },
+    Negotiation(TelnetNegotiation),
     /// A subnegotiation, defined by one of many RFC's. This contains arbitrary data.
     Subnegotiation(UnparsedTelnetSubnegotiation),
     /// ASCII(generally). This is not NVT encoded.
@@ -140,34 +68,22 @@ pub enum TelnetEvent {
 impl TelnetEvent {
     /// Construct a "do" negotiation from an option.
     pub const fn r#do(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation {
-            command: TelnetCommand::Do,
-            option,
-        }
+        TelnetEvent::Negotiation(TelnetNegotiation::Do(option))
     }
 
     /// Construct a "dont" negotiation from an option.
     pub const fn dont(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation {
-            command: TelnetCommand::Dont,
-            option,
-        }
+        TelnetEvent::Negotiation(TelnetNegotiation::Dont(option))
     }
 
     /// Construct a "will" negotiation from an option.
     pub const fn will(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation {
-            command: TelnetCommand::Will,
-            option,
-        }
+        TelnetEvent::Negotiation(TelnetNegotiation::Will(option))
     }
 
     /// Construct a "wont" negotiation from an option.
     pub const fn wont(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation {
-            command: TelnetCommand::Wont,
-            option,
-        }
+        TelnetEvent::Negotiation(TelnetNegotiation::Wont(option))
     }
 
     /// Transform into bytes.
@@ -175,12 +91,16 @@ impl TelnetEvent {
         match self {
             TelnetEvent::Data(data) => data.into_iter().unix_to_nvt().collect(),
             TelnetEvent::Command(command) => {
-                vec![TelnetCommand::IAC.into(), command.into()]
+                vec![constants::IAC, command.into()]
             }
-            TelnetEvent::Negotiation { command, option } => {
+            TelnetEvent::Negotiation(negotiation) => {
                 // Does option need to be escaped if 0xFF??
                 // RFC seems not so clear about that
-                vec![TelnetCommand::IAC.into(), command.into(), option.into()]
+                vec![
+                    constants::IAC,
+                    negotiation.command(),
+                    negotiation.option().into(),
+                ]
             }
             TelnetEvent::Subnegotiation(subnegotiation) => subnegotiation.into_bytes(),
         }
@@ -190,6 +110,44 @@ impl TelnetEvent {
 impl From<TelnetSubnegotiation> for TelnetEvent {
     fn from(other: TelnetSubnegotiation) -> Self {
         Self::Subnegotiation(other.into())
+    }
+}
+impl From<TelnetNegotiation> for TelnetEvent {
+    fn from(other: TelnetNegotiation) -> Self {
+        Self::Negotiation(other)
+    }
+}
+
+impl From<TelnetCommand> for TelnetEvent {
+    fn from(other: TelnetCommand) -> Self {
+        Self::Command(other)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TelnetNegotiation {
+    Will(TelnetOption),
+    Wont(TelnetOption),
+    Do(TelnetOption),
+    Dont(TelnetOption),
+}
+
+impl TelnetNegotiation {
+    const fn option(&self) -> TelnetOption {
+        match self {
+            Self::Will(option) | Self::Wont(option) | Self::Do(option) | Self::Dont(option) => {
+                *option
+            }
+        }
+    }
+
+    const fn command(&self) -> u8 {
+        match self {
+            Self::Will(_) => constants::WILL,
+            Self::Wont(_) => constants::WONT,
+            Self::Dont(_) => constants::DONT,
+            Self::Do(_) => constants::DO,
+        }
     }
 }
 
@@ -226,15 +184,11 @@ impl UnparsedTelnetSubnegotiation {
         Self { option, bytes }
     }
     fn into_bytes(self) -> Vec<u8> {
-        [
-            TelnetCommand::IAC.into(),
-            TelnetCommand::SB.into(),
-            self.option.into(),
-        ]
-        .into_iter()
-        .chain(self.bytes.into_iter().escape_iacs())
-        .chain([TelnetCommand::IAC.into(), TelnetCommand::SE.into()])
-        .collect()
+        [constants::IAC, constants::SB, self.option.into()]
+            .into_iter()
+            .chain(self.bytes.into_iter().escape_iacs())
+            .chain([constants::IAC, constants::SE])
+            .collect()
     }
 }
 
@@ -285,9 +239,9 @@ impl TryFrom<UnparsedTelnetSubnegotiation> for TelnetSubnegotiation {
                 Ok(Self::NegotiateAboutWindowSize { width, height })
             }
             TelnetOption::TerminalType => {
-                if !bytes.is_empty() && bytes[0] == SEND {
+                if !bytes.is_empty() && bytes[0] == constants::SEND {
                     return Ok(TelnetSubnegotiation::TerminalTypeRequest);
-                } else if bytes.is_empty() || bytes[0] != IS {
+                } else if bytes.is_empty() || bytes[0] != constants::IS {
                     return Err(TellyError::DecodeError(
                         "Expected IS or SEND in terminal-type subnegotiation".into(),
                     ));
@@ -315,9 +269,9 @@ impl TelnetSubnegotiation {
                     (height & 0xFF) as u8,
                 ],
             ),
-            Self::TerminalTypeRequest => (TelnetOption::TerminalType, vec![SEND]),
+            Self::TerminalTypeRequest => (TelnetOption::TerminalType, vec![constants::SEND]),
             Self::TerminalTypeResponse(term_name) => (TelnetOption::TerminalType, {
-                let mut vec = vec![IS];
+                let mut vec = vec![constants::IS];
                 vec.extend(term_name.as_bytes());
                 vec
             }),
@@ -361,7 +315,7 @@ impl TelnetParser {
             advancement += 1;
 
             let byte = *byte;
-            if byte == TelnetCommand::IAC.into() {
+            if byte == constants::IAC {
                 if iac {
                     iac = false;
                 } else {
@@ -373,21 +327,21 @@ impl TelnetParser {
             match event_type {
                 EventType::Null => {
                     if iac {
-                        command = Some(TelnetCommand::from(byte));
+                        command = Some(byte);
                         let command = command.expect("Bug: No Command");
                         if [
-                            TelnetCommand::Will,
-                            TelnetCommand::Wont,
-                            TelnetCommand::Do,
-                            TelnetCommand::Dont,
+                            constants::WILL,
+                            constants::WONT,
+                            constants::DO,
+                            constants::DONT,
                         ]
                         .contains(&command)
                         {
                             event_type = EventType::Negotiation;
-                        } else if command == TelnetCommand::SB {
+                        } else if command == constants::SB {
                             event_type = EventType::Subnegotiation;
                         } else {
-                            result = Some(TelnetEvent::Command(command));
+                            result = Some(TelnetEvent::Command(TelnetCommand::from(command as u8)));
                             break;
                         }
                     } else {
@@ -400,15 +354,23 @@ impl TelnetParser {
                     }
                 }
                 EventType::Negotiation => {
-                    result = Some(TelnetEvent::Negotiation {
-                        command: command.expect("Bug: telnet command None"),
-                        option: TelnetOption::from(byte),
-                    });
+                    let option = TelnetOption::from(byte);
+                    let command = command.expect("Bug: telnet command is None");
+                    result = Some(
+                        match command {
+                            constants::WILL => TelnetNegotiation::Will(option),
+                            constants::WONT => TelnetNegotiation::Wont(option),
+                            constants::DONT => TelnetNegotiation::Dont(option),
+                            constants::DO => TelnetNegotiation::Do(option),
+                            _ => unreachable!("Command isn't Will/Do/Won't/Don't!"),
+                        }
+                        .into(),
+                    );
                     break;
                 }
                 EventType::Subnegotiation => {
                     if let Some(option) = option {
-                        if iac && byte == TelnetCommand::SE.into() {
+                        if iac && byte == constants::SE {
                             result = Some(TelnetEvent::Subnegotiation(
                                 UnparsedTelnetSubnegotiation::new(option, data_buffer),
                             ));
@@ -462,40 +424,34 @@ mod tests {
             ),
             (
                 vec![
-                    TelnetCommand::IAC.into(),
-                    TelnetCommand::Will.into(),
+                    constants::IAC,
+                    constants::WILL,
                     TelnetOption::LineMode.into(),
                     0x42,
                 ],
                 vec![
-                    TelnetEvent::Negotiation {
-                        command: TelnetCommand::Will,
-                        option: TelnetOption::LineMode,
-                    },
+                    TelnetEvent::Negotiation(TelnetNegotiation::Will(TelnetOption::LineMode)),
                     TelnetEvent::Data(vec![0x42]),
                 ],
             ),
-            (
-                vec![TelnetCommand::IAC.into(), TelnetCommand::Will.into()],
-                vec![],
-            ),
+            (vec![constants::IAC, constants::WILL], vec![]),
             (vec![], vec![]),
-            (vec![TelnetCommand::IAC.into()], vec![]),
+            (vec![constants::IAC], vec![]),
             (
-                vec![TelnetCommand::IAC.into(), TelnetCommand::IAC.into()],
+                vec![constants::IAC, constants::IAC],
                 vec![TelnetEvent::Data(vec![0xff])],
             ),
             (
                 vec![
-                    TelnetCommand::IAC.into(),
-                    TelnetCommand::SB.into(),
+                    constants::IAC,
+                    constants::SB,
                     TelnetOption::NegotiateAboutWindowSize.into(),
                     0x00,
                     0xCA,
                     0x00,
                     0xFE,
-                    TelnetCommand::IAC.into(),
-                    TelnetCommand::SE.into(),
+                    constants::IAC,
+                    constants::SE,
                 ],
                 vec![TelnetEvent::Subnegotiation(
                     TelnetSubnegotiation::NegotiateAboutWindowSize {

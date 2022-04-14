@@ -174,7 +174,7 @@ mod tests {
             TelnetEvent::Data(vec![0x42, 0xFF]),
             TelnetEvent::Data(vec![0xFF]),
             TelnetEvent::Data(vec![0xFF, 0xFF]),
-            TelnetEvent::Command(TelnetCommand::NOP),
+            TelnetEvent::Command(TelnetCommand::Nop),
             TelnetEvent::will(TelnetOption::SuppressGoAhead),
             TelnetEvent::dont(TelnetOption::TimingMark),
             TelnetEvent::wont(TelnetOption::BinaryTransmission),

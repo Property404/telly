@@ -1,7 +1,6 @@
 //! Miscellaneous Telnet utilities.
-use crate::{errors::TellyError, TelnetCommand};
+use crate::{constants::IAC, errors::TellyError};
 use std::iter::{Fuse, FusedIterator};
-const IAC: u8 = TelnetCommand::IAC as u8;
 
 /// Iterator created by [TellyIterTraits::escape_iacs].
 pub struct EscapeIacs<T: Iterator<Item = u8>> {
