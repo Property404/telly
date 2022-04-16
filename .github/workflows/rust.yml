@@ -40,3 +40,6 @@ jobs:
 
       - name: Build documentation
         run: cargo doc --verbose
+
+      - name: Perform security audit
+        run: cargo install cargo-audit && cargo audit --deny warnings
