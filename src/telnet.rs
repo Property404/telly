@@ -58,7 +58,12 @@ pub enum TelnetEvent {
     Command(TelnetCommand),
     /// A Telnet request/demand/ack/nack like WILL <option>, DONT <option>, WONT <option>, or DO
     /// <option>
-    Negotiation(TelnetNegotiation),
+    Negotiation {
+        /// The Telnet command.
+        action: TelnetAction,
+        /// The option to request/demand/ack/nack.
+        option: TelnetOption,
+    },
     /// A subnegotiation, defined by one of many RFC's. This contains arbitrary data.
     Subnegotiation(UnparsedTelnetSubnegotiation),
     /// ASCII(generally). This is not NVT encoded.
@@ -68,22 +73,34 @@ pub enum TelnetEvent {
 impl TelnetEvent {
     /// Construct a "do" negotiation from an option.
     pub const fn r#do(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation(TelnetNegotiation::Do(option))
+        TelnetEvent::Negotiation {
+            action: TelnetAction::Do,
+            option,
+        }
     }
 
     /// Construct a "dont" negotiation from an option.
     pub const fn dont(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation(TelnetNegotiation::Dont(option))
+        TelnetEvent::Negotiation {
+            action: TelnetAction::Dont,
+            option,
+        }
     }
 
     /// Construct a "will" negotiation from an option.
     pub const fn will(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation(TelnetNegotiation::Will(option))
+        TelnetEvent::Negotiation {
+            action: TelnetAction::Will,
+            option,
+        }
     }
 
     /// Construct a "wont" negotiation from an option.
     pub const fn wont(option: TelnetOption) -> Self {
-        TelnetEvent::Negotiation(TelnetNegotiation::Wont(option))
+        TelnetEvent::Negotiation {
+            action: TelnetAction::Wont,
+            option,
+        }
     }
 
     /// Transform into bytes.
@@ -93,14 +110,10 @@ impl TelnetEvent {
             TelnetEvent::Command(command) => {
                 vec![constants::IAC, command.into()]
             }
-            TelnetEvent::Negotiation(negotiation) => {
+            TelnetEvent::Negotiation { action, option } => {
                 // Does option need to be escaped if 0xFF??
                 // RFC seems not so clear about that
-                vec![
-                    constants::IAC,
-                    negotiation.command(),
-                    negotiation.option().into(),
-                ]
+                vec![constants::IAC, action.into(), option.into()]
             }
             TelnetEvent::Subnegotiation(subnegotiation) => subnegotiation.into_bytes(),
         }
@@ -112,11 +125,6 @@ impl From<TelnetSubnegotiation> for TelnetEvent {
         Self::Subnegotiation(other.into())
     }
 }
-impl From<TelnetNegotiation> for TelnetEvent {
-    fn from(other: TelnetNegotiation) -> Self {
-        Self::Negotiation(other)
-    }
-}
 
 impl From<TelnetCommand> for TelnetEvent {
     fn from(other: TelnetCommand) -> Self {
@@ -124,30 +132,33 @@ impl From<TelnetCommand> for TelnetEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum TelnetNegotiation {
-    Will(TelnetOption),
-    Wont(TelnetOption),
-    Do(TelnetOption),
-    Dont(TelnetOption),
+#[derive(FromPrimitive, Clone, Copy, Debug, PartialEq)]
+/// Indicates a request or desire to enable/disable an option, or a
+/// acknowledgement/negative-acknowledgement to enable/disable that option. Used as part of a
+/// negotiation in [TelnetEvent].
+pub enum TelnetAction {
+    /// Indicates the want to begin performing, or confirmation that you are now performing, the indicated option.
+    Will = 0xfb,
+    /// Indicates the refusal to perform, or continue performing, the indicated option.
+    Wont = 0xfc,
+    /// Indicates the request that the other party perform, or confirmation that you are expecting the other party to perform, the indicated option.
+    Do = 0xfd,
+    /// Indicates the demand that the other party stop performing, or confirmation that you are no longer expecting the other party to perform, the indicated option.
+    Dont = 0xfe,
 }
 
-impl TelnetNegotiation {
-    const fn option(&self) -> TelnetOption {
-        match self {
-            Self::Will(option) | Self::Wont(option) | Self::Do(option) | Self::Dont(option) => {
-                *option
-            }
-        }
+impl From<TelnetAction> for u8 {
+    fn from(other: TelnetAction) -> u8 {
+        other as u8
     }
+}
 
-    const fn command(&self) -> u8 {
-        match self {
-            Self::Will(_) => constants::WILL,
-            Self::Wont(_) => constants::WONT,
-            Self::Dont(_) => constants::DONT,
-            Self::Do(_) => constants::DO,
-        }
+impl TryFrom<u8> for TelnetAction {
+    type Error = TellyError;
+    fn try_from(other: u8) -> TellyResult<Self> {
+        Self::from_u8(other).ok_or_else(|| {
+            TellyError::ConversionError("Could not map 0x{other:x} to a TelnetAction".into())
+        })
     }
 }
 
@@ -329,14 +340,7 @@ impl TelnetParser {
                     if iac {
                         command = Some(byte);
                         let command = command.expect("Bug: No Command");
-                        if [
-                            constants::WILL,
-                            constants::WONT,
-                            constants::DO,
-                            constants::DONT,
-                        ]
-                        .contains(&command)
-                        {
+                        if TelnetAction::try_from(command).is_ok() {
                             event_type = EventType::Negotiation;
                         } else if command == constants::SB {
                             event_type = EventType::Subnegotiation;
@@ -355,17 +359,13 @@ impl TelnetParser {
                 }
                 EventType::Negotiation => {
                     let option = TelnetOption::from(byte);
-                    let command = command.expect("Bug: telnet command is None");
-                    result = Some(
-                        match command {
-                            constants::WILL => TelnetNegotiation::Will(option),
-                            constants::WONT => TelnetNegotiation::Wont(option),
-                            constants::DONT => TelnetNegotiation::Dont(option),
-                            constants::DO => TelnetNegotiation::Do(option),
-                            _ => unreachable!("Command isn't Will/Do/Won't/Don't!"),
-                        }
-                        .into(),
-                    );
+                    let command =
+                        TelnetAction::try_from(command.expect("Bug: telnet command is None"))
+                            .expect("Command is not a Telnet action");
+                    result = Some(TelnetEvent::Negotiation {
+                        action: command,
+                        option,
+                    });
                     break;
                 }
                 EventType::Subnegotiation => {
@@ -425,16 +425,16 @@ mod tests {
             (
                 vec![
                     constants::IAC,
-                    constants::WILL,
+                    TelnetAction::Will.into(),
                     TelnetOption::LineMode.into(),
                     0x42,
                 ],
                 vec![
-                    TelnetEvent::Negotiation(TelnetNegotiation::Will(TelnetOption::LineMode)),
+                    TelnetEvent::will(TelnetOption::LineMode),
                     TelnetEvent::Data(vec![0x42]),
                 ],
             ),
-            (vec![constants::IAC, constants::WILL], vec![]),
+            (vec![constants::IAC, TelnetAction::Will.into()], vec![]),
             (vec![], vec![]),
             (vec![constants::IAC], vec![]),
             (

@@ -14,9 +14,9 @@ pub enum TellyError {
     /// Decoded bad Telnet Data.
     #[error("Bad telnet data: {0}")]
     DecodeError(String),
-    /// Invalid enum variant.
+    /// Invalid conversion.
     #[error("Invalid variant: {0}")]
-    InvalidVariant(String),
+    ConversionError(String),
 }
 
 /// Result type used in this crate.
