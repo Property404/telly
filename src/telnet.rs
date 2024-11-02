@@ -345,7 +345,7 @@ impl TelnetParser {
                         } else if command == constants::SB {
                             event_type = EventType::Subnegotiation;
                         } else {
-                            result = Some(TelnetEvent::Command(TelnetCommand::from(command as u8)));
+                            result = Some(TelnetEvent::Command(TelnetCommand::from(command)));
                             break;
                         }
                     } else {

@@ -123,11 +123,11 @@ mod tests {
             if buf.is_empty() {
                 panic!("Cannot read into empty buffer");
             }
-            for i in 0..buf.len() {
+            for (i, val) in buf.iter_mut().enumerate() {
                 if self.buffer.is_empty() {
                     return Ok(i);
                 }
-                buf[i] = self.buffer.pop_front().unwrap();
+                *val = self.buffer.pop_front().unwrap();
             }
             Ok(buf.len())
         }
@@ -151,7 +151,7 @@ mod tests {
         let stream = MockStream::default();
         let mut stream = TelnetStream::from_stream(stream);
         let test_string = "Hello World!";
-        stream.send_str(&test_string).unwrap();
+        stream.send_str(test_string).unwrap();
 
         match stream.next().unwrap() {
             TelnetEvent::Data(data) => {
